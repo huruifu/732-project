@@ -6,7 +6,7 @@ assert sys.version_info >= (3, 5)  # make sure we have Python 3.5+
 # add more functions as necessary
 
 
-def main(inputs, output):
+def main(all_seasons_inputs, injuries_inputs, output):
     # main logic starts here
     all_seasons_schema = types.StructType([
         types.StructField('index', types.StringType()),
@@ -32,18 +32,30 @@ def main(inputs, output):
         types.StructField('ast_pct', types.DoubleType()),
         types.StructField('season', types.StringType()),
     ])
+    injuries_schema = types.StructType([
+        types.StructField('Date', types.StringType()),
+        types.StructField('Team', types.StringType()),
+        types.StructField('Acquired', types.StringType()),
+        types.StructField('Relinquished', types.StringType()),
+        types.StructField('Notes', types.StringType())
+    ])
     all_seasons = (spark.read.format("s3selectCSV")
                    .option("header", "true")
                    .schema(all_seasons_schema)
-                   .load(inputs)
+                   .load(all_seasons_inputs)
                    .withColumn('season', functions.substring(functions.col('season'), 1, 4).cast(types.IntegerType()))
                    .where(functions.col('season') >= 2010)
                    .select('player_name', 'team_abbreviation', 'age', 'player_height', 'player_weight', 'season')
                    .orderBy(functions.col('player_name'), functions.col('season'), functions.col('team_abbreviation')))
+    injuries = (spark.read.format("s3selectCSV")
+                .option("header", "true")
+                .schema(all_seasons_schema)
+                .load(injuries_inputs))
+    
     all_seasons.coalesce(1).write.csv(output, mode='overwrite')
     return
 
-# commands on AWS ECR 
+# commands on AWS ECR
 # Player General Information ETL process
 # --conf spark.yarn.maxAppAttempts=1
 # s3://c732-sfu-rha83-a5/player_etl.py
@@ -51,11 +63,12 @@ def main(inputs, output):
 
 
 if __name__ == '__main__':
-    inputs = sys.argv[1]
-    output = sys.argv[2]
+    all_seasons_inputs = sys.argv[1]
+    injuries_inputs = sys.argv[2]
+    output = sys.argv[3]
     spark = SparkSession.builder.appName(
         'Player General Information ETL process').getOrCreate()
     assert spark.version >= '3.0'  # make sure we have Spark 3.0+
     spark.sparkContext.setLogLevel('WARN')
     sc = spark.sparkContext
-    main(inputs, output)
+    main(all_seasons_inputs, injuries_inputs, output)
