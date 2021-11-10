@@ -1,13 +1,45 @@
 from pyspark.sql import SparkSession, functions, types
+import re
 import sys
 assert sys.version_info >= (3, 5)  # make sure we have Python 3.5+
 
 
 # add more functions as necessary
+@functions.udf(returnType=types.StringType())
+def unify_team_name(column):
+    column = column.upper()
+    if column == "PHO":
+        column = "PHX"
+    if column == "NOR":
+        column = "NOP"
+    if column == "SAN":
+        column = "SAS"
+    if column == "Gol":
+        column = "GSW"
+    if column == "BRO":
+        column = "BKN"
+    if column == "TOT":
+        column = "TOR"
+    if column == "CHH" or column == "CHO":
+        column = "CHA"
+    return column
 
 
-def main(all_seasons_inputs, injuries_inputs, output):
+def main(player_info_before_2017_inputs, player_info_2018_inputs, player_info_2019_inputs, player_info_2020_inputs, all_seasons_inputs, output):
     # main logic starts here
+    player_info_before_2017_schema = types.StructType([
+        types.StructField('Index', types.StringType()),
+        types.StructField('Year', types.IntegerType()),
+        types.StructField('Player', types.StringType()),
+        types.StructField('Pos', types.StringType()),
+        types.StructField('Age', types.IntegerType()),
+        types.StructField('Tm', types.StringType())
+    ])
+    player_info_schema = types.StructType([
+        types.StructField('FULL NAME', types.StringType()),
+        types.StructField('TEAM', types.StringType()),
+        types.StructField('POS', types.StringType())
+    ])
     all_seasons_schema = types.StructType([
         types.StructField('index', types.StringType()),
         types.StructField('player_name', types.StringType()),
@@ -32,43 +64,73 @@ def main(all_seasons_inputs, injuries_inputs, output):
         types.StructField('ast_pct', types.DoubleType()),
         types.StructField('season', types.StringType()),
     ])
-    injuries_schema = types.StructType([
-        types.StructField('Date', types.StringType()),
-        types.StructField('Team', types.StringType()),
-        types.StructField('Acquired', types.StringType()),
-        types.StructField('Relinquished', types.StringType()),
-        types.StructField('Notes', types.StringType())
-    ])
-    all_seasons = (spark.read.format("s3selectCSV")
+    player_info_before_2017 = (spark.read.format("csv")
+                               .option("header", "true")
+                               .schema(player_info_before_2017_schema)
+                               .load(player_info_before_2017_inputs)
+                               .where(functions.col("Year") >= 2010)
+                               .withColumnRenamed("Player", "playerName")
+                               .withColumnRenamed("Pos", "player_position")
+                               .select("playerName", "player_position"))
+    player_info_2018 = (spark.read.format("csv")
+                        .option("header", "true")
+                        .schema(player_info_schema)
+                        .load(player_info_2018_inputs)
+                        .withColumnRenamed("FULL NAME", "playerName")
+                        .withColumnRenamed("POS", "player_position")
+                        .select("playerName", "player_position"))
+    player_info_2019 = (spark.read.format("csv")
+                        .option("header", "true")
+                        .schema(player_info_schema)
+                        .load(player_info_2019_inputs)
+                        .withColumnRenamed("FULL NAME", "playerName")
+                        .withColumnRenamed("POS", "player_position")
+                        .select("playerName", "player_position"))
+    player_info_2020 = (spark.read.format("csv")
+                        .option("header", "true")
+                        .schema(player_info_schema)
+                        .load(player_info_2020_inputs)
+                        .withColumnRenamed("FULL NAME", "playerName")
+                        .withColumnRenamed("POS", "player_position")
+                        .select("playerName", "player_position"))
+    player_info = (player_info_before_2017
+                   .union(player_info_2018)
+                   .union(player_info_2019)
+                   .union(player_info_2020)
+                   .dropDuplicates(["playerName"])
+                   .orderBy("playerName"))
+    all_seasons = (spark.read.format("csv")
                    .option("header", "true")
                    .schema(all_seasons_schema)
                    .load(all_seasons_inputs)
                    .withColumn('season', functions.substring(functions.col('season'), 1, 4).cast(types.IntegerType()))
                    .where(functions.col('season') >= 2010)
-                   .select('player_name', 'team_abbreviation', 'age', 'player_height', 'player_weight', 'season')
+                   .select('player_name', 'team_abbreviation', 'age', 'player_height', 'player_weight', 'season', 'draft_year', 'draft_round', 'draft_number')
                    .orderBy(functions.col('player_name'), functions.col('season'), functions.col('team_abbreviation')))
-    injuries = (spark.read.format("s3selectCSV")
-                .option("header", "true")
-                .schema(all_seasons_schema)
-                .load(injuries_inputs))
-    
-    all_seasons.coalesce(1).write.csv(output, mode='overwrite')
+    player_info = (all_seasons
+                   .join(player_info,
+                         functions.regexp_replace(all_seasons["player_name"], r'\.', "") == functions.regexp_replace(player_info["playerName"], r'\.', ""),
+                         "left")
+                   .select('player_name',  "player_position", 'team_abbreviation', 'age', 'player_height', 'player_weight', 'season', 'draft_year', 'draft_round', 'draft_number')
+                   .orderBy(functions.col('player_name'), functions.col('season'), functions.col('team_abbreviation')))
+    player_info.cache()
+    numRows = player_info.groupBy("player_name").count().count()
+    print(numRows) #1397
+    player_info.coalesce(1).write.csv(output, mode='overwrite')
     return
-
-# commands on AWS ECR
-# Player General Information ETL process
-# --conf spark.yarn.maxAppAttempts=1
-# s3://c732-sfu-rha83-a5/player_etl.py
-# s3://c732-sfu-rha83-a5/NBA_Data/all_seasons.csv s3://c732-sfu-rha83-a5/output/NBA/player_info/
 
 
 if __name__ == '__main__':
-    all_seasons_inputs = sys.argv[1]
-    injuries_inputs = sys.argv[2]
-    output = sys.argv[3]
+    player_info_before_2017_inputs = sys.argv[1]
+    player_info_2018_inputs = sys.argv[2]
+    player_info_2019_inputs = sys.argv[3]
+    player_info_2020_inputs = sys.argv[4]
+    all_seasons_inputs = sys.argv[5]
+    output = sys.argv[6]
     spark = SparkSession.builder.appName(
-        'Player General Information ETL process').getOrCreate()
+        'Player Position Join process').getOrCreate()
     assert spark.version >= '3.0'  # make sure we have Spark 3.0+
     spark.sparkContext.setLogLevel('WARN')
     sc = spark.sparkContext
-    main(all_seasons_inputs, injuries_inputs, output)
+    main(player_info_before_2017_inputs, player_info_2018_inputs,
+         player_info_2019_inputs, player_info_2020_inputs, all_seasons_inputs, output)
