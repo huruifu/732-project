@@ -25,7 +25,7 @@ def unify_team_name(column):
     return column
 
 
-def main(player_info_before_2017_inputs, player_info_2018_inputs, player_info_2019_inputs, player_info_2020_inputs, all_seasons_inputs, output):
+def main():
     # main logic starts here
     player_info_before_2017_schema = types.StructType([
         types.StructField('Index', types.StringType()),
@@ -93,6 +93,13 @@ def main(player_info_before_2017_inputs, player_info_2018_inputs, player_info_20
                         .withColumnRenamed("FULL NAME", "playerName")
                         .withColumnRenamed("POS", "player_position")
                         .select("playerName", "player_position"))
+    player = (spark.read.format("csv")
+              .option("header", "true")
+            #   .schema(player_schema)
+              .load(player_inputs)
+              .withColumnRenamed("season", "year")
+              .withColumnRenamed("PLAYER_NAME", "playerName")
+              .dropDuplicates(["playerName"]))
     player_info = (player_info_before_2017
                    .union(player_info_2018)
                    .union(player_info_2019)
@@ -113,10 +120,16 @@ def main(player_info_before_2017_inputs, player_info_2018_inputs, player_info_20
                          "left")
                    .select('player_name',  "player_position", 'team_abbreviation', 'age', 'player_height', 'player_weight', 'season', 'draft_year', 'draft_round', 'draft_number')
                    .orderBy(functions.col('player_name'), functions.col('season'), functions.col('team_abbreviation')))
+    player_info = (player_info
+                   .join(player,
+                         functions.regexp_replace(player_info["player_name"], r'\.', "") == functions.regexp_replace(player["playerName"], r'\.', ""),
+                         "left")
+                   .select('player_name',  "player_position", 'team_abbreviation', 'age', 'player_height', 'player_weight', 'season', 'draft_year', 'draft_round', 'draft_number', "PLAYER_ID")
+                   .orderBy(functions.col('player_name'), functions.col('season'), functions.col('team_abbreviation')))
     player_info.cache()
     numRows = player_info.groupBy("player_name").count().count()
     print(numRows) #1397
-    player_info.coalesce(1).write.csv(output, mode='overwrite')
+    player_info.coalesce(1).write.option("header", "true").csv(output, mode='overwrite')
     return
 
 
@@ -126,11 +139,11 @@ if __name__ == '__main__':
     player_info_2019_inputs = sys.argv[3]
     player_info_2020_inputs = sys.argv[4]
     all_seasons_inputs = sys.argv[5]
-    output = sys.argv[6]
+    player_inputs = sys.argv[6]
+    output = sys.argv[7]
     spark = SparkSession.builder.appName(
         'Player Position Join process').getOrCreate()
     assert spark.version >= '3.0'  # make sure we have Spark 3.0+
     spark.sparkContext.setLogLevel('WARN')
     sc = spark.sparkContext
-    main(player_info_before_2017_inputs, player_info_2018_inputs,
-         player_info_2019_inputs, player_info_2020_inputs, all_seasons_inputs, output)
+    main()
